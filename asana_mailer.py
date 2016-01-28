@@ -371,7 +371,8 @@ def as_date(datetime_str):
 
 
 def generate_templates(
-        project, html_template, text_template, current_date, current_time_utc, skip_inline_css=False):
+        project, html_template, text_template, current_date, current_time_utc,
+        skip_inline_css=False):
     '''Generates the templates using Jinja2 templates
 
     :param html_template: The filename of the HTML template in the templates
@@ -412,7 +413,8 @@ def generate_templates(
 
 def send_email(
         project, mail_server, from_address, to_addresses, cc_addresses,
-        rendered_html, rendered_text, current_date, smtp_username=None, smtp_password=None, smtp_port=None):
+        rendered_html, rendered_text, current_date, smtp_username=None,
+        smtp_password=None, smtp_port=None):
     '''Sends an email using a Project and rendered templates.
 
     :param project: The Project instance for this email
@@ -454,16 +456,19 @@ def send_email(
         to_addresses.extend(cc_addresses)
 
     try:
-        if (smtp_username != None and smtp_password != None):
+        if (smtp_username is not None and smtp_password is not None):
             if not smtp_port:
                 smtp_port = 465
-            log.info('Connecting to authenticated SMTP Server: {0}'.format(mail_server))
-            smtp_conn = smtplib.SMTP_SSL(mail_server, port=smtp_port, timeout=300)
+            log.info('Connecting to authenticated SMTP Server: {0}'.format(
+                mail_server))
+            smtp_conn = smtplib.SMTP_SSL(
+                mail_server, port=smtp_port, timeout=300)
             log.info('Logging in to Email')
             smtp_conn.ehlo()
             smtp_conn.login(smtp_username, smtp_password)
         else:
-            log.info('Connecting to anonymous SMTP Server: {0}'.format(mail_server))
+            log.info(
+                'Connecting to anonymous SMTP Server: {0}'.format(mail_server))
             smtp_conn = smtplib.SMTP(mail_server, timeout=300)
             log.info('Sending Email')
         smtp_conn.sendmail(from_address, to_addresses, message.as_string())
@@ -501,7 +506,7 @@ def create_cli_parser():
     parser.add_argument('api_key', help='your asana api key')
     parser.add_argument(
         '-i', '--skip-inline-css',
-        action='store_false', 
+        action='store_false',
         default=True, help='skip inlining of CSS in rendered HTML')
     parser.add_argument(
         '-c', '--completed', type=int, dest='completed_lookback_hours',
@@ -537,10 +542,12 @@ def create_cli_parser():
         help="the 'From:' address for the outgoing email")
     email_group.add_argument(
         '--username', metavar='ADDRESS', default=None,
-        help="the username to authenticate to the outgoing (SMTP) mail server over SSL")
+        help='the username to authenticate to the outgoing (SMTP) mail server '
+        'over SSL')
     email_group.add_argument(
         '--password', metavar='ADDRESS', default=None,
-        help="the password to authenticate to the outgoing (SMTP) mail server over SSL")
+        help='the password to authenticate to the outgoing (SMTP) mail server '
+        'over SSL')
 
     return parser
 
@@ -582,7 +589,8 @@ def main():
             cc_addresses = None
         send_email(
             project, args.mail_server, args.from_address, args.to_addresses[:],
-            cc_addresses, rendered_html, rendered_text, current_date, args.username, args.password)
+            cc_addresses, rendered_html, rendered_text, current_date,
+            args.username, args.password)
     else:
         write_rendered_files(rendered_html, rendered_text, current_date)
     log.info('Finished')
