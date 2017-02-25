@@ -26,14 +26,13 @@ Asana's REST API to generate a plaintext and HTML email using Jinja2 templates.
 import argparse
 import codecs
 import datetime
-import json
 import logging
 import smtplib
 
+import asana
 import dateutil.parser
 import dateutil.tz
 import premailer
-import requests
 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -59,54 +58,6 @@ def init_logging():
 log = init_logging()
 
 
-class AsanaAPI(object):
-    '''The class for making calls to Asana's REST API.
-
-    The Asana class represents the infrastructure for storing a user's API key
-    and making calls to Asana's API. It is utilized for generating the Project
-    and its contained objects (Section, Task, etc.).
-    '''
-
-    asana_api_url = 'https://app.asana.com/api/1.0/'
-    project_endpoint = 'projects/{project_id}'
-    project_tasks_endpoint = 'projects/{project_id}/tasks'
-    task_stories_endpoint = 'tasks/{task_id}/stories'
-
-    def __init__(self, api_key):
-        self.api_key = api_key
-
-    def get(self, endpoint_name, path_vars=None, expand=None, params=None):
-        '''Makes a call to Asana's API.
-
-        :param endpoint_name: The endpoint attribute to connect to
-        :param **kwargs: The keyword arguments necessary for retrieving data
-        from a particular endpoint
-        '''
-        endpoint = getattr(type(self), '{0}_endpoint'.format(endpoint_name))
-        if path_vars is not None:
-            endpoint = endpoint.format(**path_vars)
-        url = '{0}{1}'.format(type(self).asana_api_url, endpoint)
-        log.info('Making API Call to {0}'.format(url))
-        if expand:
-            if params is None:
-                params = {}
-            if 'opt_expand' not in params:  # Don't overwrite parameters
-                params['opt_expand'] = expand
-        response = requests.get(url, params=params, auth=(self.api_key, ''))
-        if response.status_code == requests.codes.ok:
-            return response.json()[u'data']
-        else:
-            log.error('Asana API Returned Non-OK (200) Response')
-            if response.content:
-                try:
-                    log.error('Response Content:\n{0}'.format(
-                        json.dumps(json.loads(response.content), indent=2)))
-                except (TypeError, ValueError):
-                    # If the error content isn't JSON, don't log it.
-                    pass
-            response.raise_for_status()
-
-
 class Project(object):
     '''An object that represents an Asana Project and its metadata.
 
@@ -126,7 +77,7 @@ class Project(object):
 
     @staticmethod
     def create_project(
-            asana, project_id, current_time_utc, task_filters=None,
+            asana_client, project_id, current_time_utc, task_filters=None,
             section_filters=None, completed_lookback_hours=None):
         '''Creates a Project utilizing data from Asana.
 
@@ -135,7 +86,7 @@ class Project(object):
         into Task and Section objects, and then filtered again in order to
         perform filtering that is only possible post-parsing.
 
-        :param asana: The initialized Asana object that makes API calls
+        :param asana_api: The initialized Asana object that makes API calls
         :param project_id: The Asana Project ID
         :param task_filters: A list of tag filters for filtering out tasks
         :param section_filters: A list of sections to filter out tasks
@@ -146,7 +97,7 @@ class Project(object):
         log.info('Creating project object from Asana Project {0}'.format(
             project_id))
 
-        project_json = asana.get('project', {'project_id': project_id})
+        project_json = asana_client.projects.find_by_id(project_id)
 
         tasks_params = {}
         if completed_lookback_hours:
@@ -158,9 +109,8 @@ class Project(object):
         else:
             completed_since = 'now'
         tasks_params['completed_since'] = completed_since
-        project_tasks_json = asana.get(
-            'project_tasks', {'project_id': project_id}, expand='.',
-            params=tasks_params)
+        project_tasks_json = list(asana_client.projects.tasks(
+            project_id, params=tasks_params, expand='.'))
         task_comments = {}
 
         current_section = None
@@ -176,7 +126,7 @@ class Project(object):
                 continue
             task_id = unicode(task[u'id'])
             log.info('Getting task comments for task: {0}'.format(task_id))
-            task_stories = asana.get('task_stories', {'task_id': task_id})
+            task_stories = asana_client.tasks.stories(task_id)
             current_task_comments = [
                 story for story in task_stories if
                 story[u'type'] == u'comment']
@@ -503,7 +453,7 @@ def create_cli_parser():
         description='Generates an email template for an Asana project',
         fromfile_prefix_chars='@')
     parser.add_argument('project_id', help='the asana project id')
-    parser.add_argument('api_key', help='your asana api key')
+    parser.add_argument('pat', help='your asana PAT (personal access token)')
     parser.add_argument(
         '-i', '--skip-inline-css',
         action='store_false',
@@ -568,14 +518,14 @@ def main():
         parser.error(
             "'To:' and 'From:' address are required for sending email")
 
-    asana = AsanaAPI(args.api_key)
+    asana_client = asana.Client.access_token(args.pat)
     filters = frozenset((unicode(filter) for filter in args.tag_filters))
     section_filters = frozenset(
         (unicode(section + ':') for section in args.section_filters))
     current_time_utc = datetime.datetime.now(dateutil.tz.tzutc())
     current_date = str(datetime.date.today())
     project = Project.create_project(
-        asana, args.project_id, current_time_utc, task_filters=filters,
+        asana_client, args.project_id, current_time_utc, task_filters=filters,
         section_filters=section_filters,
         completed_lookback_hours=args.completed_lookback_hours)
     rendered_html, rendered_text = generate_templates(

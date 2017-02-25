@@ -9,102 +9,8 @@ import unittest
 
 import dateutil
 import mock
-import nose
-import requests
 
 import asana_mailer
-
-from requests.exceptions import HTTPError
-
-
-class AsanaAPITestCase(unittest.TestCase):
-
-    @classmethod
-    def setup_class(cls):
-        cls.api = asana_mailer.AsanaAPI('api_key')
-
-    def test_init(self):
-        self.assertEqual(type(self).api.api_key, 'api_key')
-
-    @mock.patch('json.loads')
-    @mock.patch('requests.get')
-    def test_get(self, mock_get_request, mock_json_loads):
-        api = type(self).api
-        mock_response = mock_get_request.return_value
-        mock_response.status_code = requests.codes.ok
-        with self.assertRaises(AttributeError):
-            api.get('not_an_endpoint')
-        with self.assertRaises(KeyError):
-            api.get('project', {'invalid_path_var': 'invalid'})
-        auth = ('api_key', '')
-
-        # No Path Vars
-        api.get('project')
-        mock_get_request.assert_called_once_with('{0}{1}'.format(
-            api.asana_api_url, api.project_endpoint), params=None, auth=auth)
-
-        mock_get_request.reset_mock()
-        api.get('project', {'project_id': u'123'})
-        mock_response.json.assert_called_once_with()
-
-        mock_response.reset_mock()
-        api.get('project_tasks', {'project_id': u'123'}, expand='.')
-        mock_response.json.assert_called_once_with()
-
-        mock_get_request.reset_mock()
-        api.get(
-            'project_tasks', {'project_id': u'123'}, expand='.',
-            params={'opt_expand': 'name'})
-        full_endpoint = api.project_tasks_endpoint.format(
-            project_id=u'123')
-        mock_get_request.assert_called_once_with(
-            '{0}{1}'.format(api.asana_api_url, full_endpoint),
-            params={'opt_expand': 'name'}, auth=auth)
-
-        mock_response.reset_mock()
-        mock_response.status_code = requests.codes.not_found
-        mock_response.content = (
-            '{"errors": [{"message": "404 Not Found"}]}'
-        )
-        mock_response.raise_for_status.side_effect = HTTPError()
-        with self.assertRaises(HTTPError):
-            api.get('task_stories', {'task_id': u'123'})
-
-        # No content should still throw exception
-        mock_response.content = None
-        with self.assertRaises(HTTPError):
-            api.get('task_stories', {'task_id': u'123'})
-
-        mock_response.raise_for_status.side_effect = None
-        mock_json_loads.side_effect = TypeError()
-        try:
-            api.get('project', {'project_id': u'123'})
-        except TypeError:
-            self.fail(
-                'Asana.get should handle TypeError during JSON Error'
-                'Conversion')
-        mock_json_loads.side_effect = ValueError()
-        try:
-            api.get('project', {'project_id': u'123'})
-        except ValueError:
-            self.fail(
-                'Asana.get should handle TypeError during JSON Error'
-                'Conversion')
-
-        mock_get_request.assertHasCalls([
-            mock.call(url='{}{}'.format(
-                type(api).asana_api_url,
-                type(api).project_endpoint.format(project_id=u'123')),
-                auth=auth),
-            mock.call(url='{}{}'.format(
-                type(api).asana_api_url,
-                type(api).project_tasks_endpoint.format(project_id=u'123')),
-                auth=auth),
-            mock.call(url='{}{}'.format(
-                type(api).asana_api_url,
-                type(api).task_stories_endpoint.format(task_id=u'123')),
-                auth=auth),
-        ])
 
 
 class ProjectTestCase(unittest.TestCase):
@@ -151,7 +57,7 @@ class ProjectTestCase(unittest.TestCase):
                 u'tags': []
             },
         ]
-        task_comments_json = (
+        task_comments_json = [
             (
                 {u'text': u'blah', u'type': u'comment'},
                 {u'text': u'blah2', u'type': u'not_a_comment'}
@@ -160,17 +66,17 @@ class ProjectTestCase(unittest.TestCase):
                 {u'text': u'blah', u'type': 'comment'},
                 {u'text': u'blah3', u'type': 'comment'}
             )
-        )
-        all_calls = [project_json, project_tasks_json]
-        all_calls.extend(task_comments_json)
-        mock_asana.get.side_effect = all_calls
+        ]
+        mock_asana.projects.find_by_id.return_value = project_json
+        mock_asana.projects.tasks.return_value = project_tasks_json
+        mock_asana.tasks.stories.side_effect = task_comments_json
         new_section = asana_mailer.Section(u'Test Section:')
         new_tasks = (
             asana_mailer.Task(
                 u'Do Work', u'test_user', True,
                 dateutil.parser.parse(now), u'test_description',
                 dateutil.parser.parse(now),
-                [u'Tag #{}'.format(i) for i in xrange(5)], [
+                [u'Tag #{}'.format(i) for i in range(5)], [
                     {u'text': u'blah', u'type': u'comment'},
                     {u'text': u'blah2', u'type': u'not_a_comment'}
                 ]
@@ -207,22 +113,26 @@ class ProjectTestCase(unittest.TestCase):
 
         # Completed Lookback
         mock_create_sections.return_value = new_sections
-        mock_asana.get.side_effect = all_calls
+        mock_asana.projects.find_by_id.return_value = project_json
+        mock_asana.projects.tasks.return_value = project_tasks_json
+        mock_asana.tasks.stories.side_effect = task_comments_json
         lookback_hours = 10
         new_project = asana_mailer.Project.create_project(
             mock_asana, u'123', current_time_utc,
             completed_lookback_hours=lookback_hours)
         completed_since = (current_time_utc - datetime.timedelta(
             hours=lookback_hours)).replace(microsecond=0).isoformat()
-        mock_asana.get.assert_any_call(
-            'project_tasks', {'project_id': u'123'}, expand='.',
-            params={'completed_since': completed_since})
+        mock_asana.projects.tasks.assert_any_call(
+            u'123', params={'completed_since': completed_since},
+            expand='.')
 
         # Section Filters
         section_filters = (u'Other Section:',)
         mock_filter_tasks.reset_mock()
         mock_create_sections.reset_mock()
-        mock_asana.get.side_effect = all_calls
+        mock_asana.projects.find_by_id.return_value = project_json
+        mock_asana.projects.tasks.return_value = project_tasks_json
+        mock_asana.tasks.stories.side_effect = task_comments_json
         new_project = asana_mailer.Project.create_project(
             mock_asana, u'123', current_time_utc,
             section_filters=section_filters)
@@ -236,7 +146,9 @@ class ProjectTestCase(unittest.TestCase):
         # Task Filters
         mock_filter_tasks.reset_mock()
         mock_create_sections.reset_mock()
-        mock_asana.get.side_effect = all_calls
+        mock_asana.projects.find_by_id.return_value = project_json
+        mock_asana.projects.tasks.return_value = project_tasks_json
+        mock_asana.tasks.stories.side_effect = task_comments_json
         task_filters = [u'Tag #1']
         new_project = asana_mailer.Project.create_project(
             mock_asana, u'123', current_time_utc,
@@ -247,15 +159,16 @@ class ProjectTestCase(unittest.TestCase):
         mock_filter_tasks.assert_called_once_with(
             current_time_utc, section_filters=None, task_filters=task_filters)
 
-        all_calls[-1] = (
-            {u'text': u'blah', u'type': 'not_a_comment'},
-            {u'text': u'blah3', u'type': 'not_a_comment'}
-        )
-
         # Task with no comments
         mock_filter_tasks.reset_mock()
         mock_create_sections.reset_mock()
-        mock_asana.get.side_effect = all_calls
+        mock_asana.projects.find_by_id.return_value = project_json
+        mock_asana.projects.tasks.return_value = project_tasks_json
+        task_comments_json[-1] = (
+            {u'text': u'blah', u'type': 'not_a_comment'},
+            {u'text': u'blah3', u'type': 'not_a_comment'}
+        )
+        mock_asana.tasks.stories.side_effect = task_comments_json
         new_project = asana_mailer.Project.create_project(
             mock_asana, u'123', current_time_utc)
         self.assertEquals(new_project.sections, new_sections)
@@ -292,7 +205,7 @@ class ProjectTestCase(unittest.TestCase):
             u'Do Work With Tags', u'test_user', False,
             dateutil.parser.parse(now), u'test_description',
             dateutil.parser.parse(now),
-            [u'Tag #{}'.format(i) for i in xrange(5)], [
+            [u'Tag #{}'.format(i) for i in range(5)], [
                 {u'text': u'blah', u'type': u'comment'},
                 {u'text': u'blah2', u'type': u'not_a_comment'}
             ]
@@ -337,7 +250,7 @@ class SectionTestCase(unittest.TestCase):
             asana_mailer.Task(
                 'Task #{}'.format(i), 'test_assignee', False, None,
                 'test_description', None, [], [])
-            for i in xrange(5)]
+            for i in range(5)]
 
     def test_init(self):
         self.assertEqual(self.section.name, 'Test Section')
@@ -362,7 +275,7 @@ class SectionTestCase(unittest.TestCase):
                 u'completed_at': now,
                 u'notes': u'test_description',
                 u'due_on': now,
-                u'tags': [{u'name': u'Tag #{}'.format(i)} for i in xrange(5)]
+                u'tags': [{u'name': u'Tag #{}'.format(i)} for i in range(5)]
             },
             {
                 u'id': u'456', u'name': u'More Work',
@@ -401,7 +314,7 @@ class SectionTestCase(unittest.TestCase):
             {u'text': u'blah3', u'type': 'comment'}
         ])
         self.assertEquals(
-            first_task.tags, [u'Tag #{}'.format(i) for i in xrange(5)])
+            first_task.tags, [u'Tag #{}'.format(i) for i in range(5)])
         second_task = sections[0].tasks[1]
         self.assertIsNone(second_task.assignee)
         self.assertEquals(second_task.name, u'More Work')
@@ -428,7 +341,6 @@ class SectionTestCase(unittest.TestCase):
         )
         sections = asana_mailer.Section.create_sections(
             project_tasks_json, task_comments)
-        print [s.name for s in sections]
         self.assertEquals(len(sections), 2)
         self.assertEquals(sections[-1].name, u'Misc:')
         self.assertEquals(len(sections[-1].tasks), 1)
@@ -484,7 +396,7 @@ class FiltersTestCase(unittest.TestCase):
         now = datetime.datetime.now(dateutil.tz.tzutc())
         comments = [
             {u'created_at': (now - datetime.timedelta(days=i)).isoformat()}
-            for i in reversed(xrange(7))
+            for i in range(6, -1, -1)
         ]
         self.assertEqual(
             asana_mailer.comments_within_lookback(comments, now, 0),
@@ -498,7 +410,6 @@ class FiltersTestCase(unittest.TestCase):
         self.assertEqual(
             asana_mailer.comments_within_lookback(comments, now, 49),
             comments[-3:])
-        print comments
         self.assertEqual(
             asana_mailer.comments_within_lookback(comments, now, 144),
             comments[1:])
@@ -608,17 +519,18 @@ class AsanaMailerTestCase(unittest.TestCase):
     @mock.patch('asana_mailer.send_email')
     @mock.patch('asana_mailer.generate_templates')
     @mock.patch('asana_mailer.Project.create_project')
-    @mock.patch('asana_mailer.AsanaAPI')
+    @mock.patch('asana_mailer.asana')
     @mock.patch('asana_mailer.create_cli_parser')
     def test_main(
-            self, mock_cli_parser, mock_asana_api, mock_create_project,
+            self, mock_cli_parser, mock_asana_client, mock_create_project,
             mock_generate_templates, mock_send_email,
             mock_write_rendered_files, mock_datetime, mock_date):
 
         mock_cli_instance = mock_cli_parser.return_value
         mock_cli_instance.error.side_effect = SystemExit(2)
         mock_create_project.return_value = 'Project'
-        mock_asana_instance = mock_asana_api.return_value
+        mock_asana_instance = (
+            mock_asana_client.Client.access_token.return_value)
         mock_datetime_now_instance = mock_datetime.now.return_value
         mock_date.today.return_value = 'Mock Date'
         mock_generate_templates.return_value = (
@@ -632,7 +544,7 @@ class AsanaMailerTestCase(unittest.TestCase):
         self.assertEquals(cm.exception.code, 2)
 
         namespace = argparse.Namespace(
-            api_key='api_key',
+            pat='pat',
             tag_filters=['tag_filter'],
             section_filters=['section_filter'],
             project_id='project_id',
@@ -642,10 +554,15 @@ class AsanaMailerTestCase(unittest.TestCase):
             mail_server='mockhost',
             cc_addresses=None,
             from_address='example@example.com',
-            to_addresses=['example2@example.com'])
+            to_addresses=['example2@example.com'],
+            skip_inline_css=False,
+            username=None,
+            password=None
+        )
         mock_cli_instance.parse_args.return_value = namespace
         asana_mailer.main()
-        mock_asana_api.assert_called_once_with('api_key')
+        mock_asana_client.Client.access_token.assert_called_once_with(
+            'pat')
         mock_create_project.assert_called_once_with(
             mock_asana_instance, 'project_id', mock_datetime_now_instance,
             task_filters=frozenset((u'tag_filter',)),
@@ -653,11 +570,11 @@ class AsanaMailerTestCase(unittest.TestCase):
             completed_lookback_hours=None)
         mock_generate_templates.assert_called_once_with(
             'Project', 'Mock.html', 'Mock.markdown', 'Mock Date',
-            mock_datetime_now_instance)
+            mock_datetime_now_instance, False)
         mock_send_email.assert_called_once_with(
             'Project', 'mockhost', 'example@example.com',
             ['example2@example.com'], None, 'rendered_html', 'rendered_text',
-            'Mock Date')
+            'Mock Date', None, None)
 
         # With Cc Addresses
         namespace.cc_addresses = [
@@ -670,7 +587,7 @@ class AsanaMailerTestCase(unittest.TestCase):
             'Project', 'mockhost', 'example@example.com',
             ['example2@example.com'],
             ['example3@example.com', 'example4@example.com'], 'rendered_html',
-            'rendered_text', 'Mock Date')
+            'rendered_text', 'Mock Date', None, None)
 
         # With No Addresses
         namespace.to_addresses = None
@@ -776,4 +693,4 @@ class AsanaMailerTestCase(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    nose.main()
+    unittest.main()
