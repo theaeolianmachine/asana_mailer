@@ -26,14 +26,13 @@ Asana's REST API to generate a plaintext and HTML email using Jinja2 templates.
 import argparse
 import codecs
 import datetime
-import json
 import logging
 import smtplib
 
+import asana
 import dateutil.parser
 import dateutil.tz
 import premailer
-import requests
 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -59,54 +58,6 @@ def init_logging():
 log = init_logging()
 
 
-class AsanaAPI(object):
-    '''The class for making calls to Asana's REST API.
-
-    The Asana class represents the infrastructure for storing a user's API key
-    and making calls to Asana's API. It is utilized for generating the Project
-    and its contained objects (Section, Task, etc.).
-    '''
-
-    asana_api_url = 'https://app.asana.com/api/1.0/'
-    project_endpoint = 'projects/{project_id}'
-    project_tasks_endpoint = 'projects/{project_id}/tasks'
-    task_stories_endpoint = 'tasks/{task_id}/stories'
-
-    def __init__(self, api_key):
-        self.api_key = api_key
-
-    def get(self, endpoint_name, path_vars=None, expand=None, params=None):
-        '''Makes a call to Asana's API.
-
-        :param endpoint_name: The endpoint attribute to connect to
-        :param **kwargs: The keyword arguments necessary for retrieving data
-        from a particular endpoint
-        '''
-        endpoint = getattr(type(self), '{0}_endpoint'.format(endpoint_name))
-        if path_vars is not None:
-            endpoint = endpoint.format(**path_vars)
-        url = '{0}{1}'.format(type(self).asana_api_url, endpoint)
-        log.info('Making API Call to {0}'.format(url))
-        if expand:
-            if params is None:
-                params = {}
-            if 'opt_expand' not in params:  # Don't overwrite parameters
-                params['opt_expand'] = expand
-        response = requests.get(url, params=params, auth=(self.api_key, ''))
-        if response.status_code == requests.codes.ok:
-            return response.json()[u'data']
-        else:
-            log.error('Asana API Returned Non-OK (200) Response')
-            if response.content:
-                try:
-                    log.error('Response Content:\n{0}'.format(
-                        json.dumps(json.loads(response.content), indent=2)))
-                except (TypeError, ValueError):
-                    # If the error content isn't JSON, don't log it.
-                    pass
-            response.raise_for_status()
-
-
 class Project(object):
     '''An object that represents an Asana Project and its metadata.
 
@@ -126,7 +77,7 @@ class Project(object):
 
     @staticmethod
     def create_project(
-            asana, project_id, current_time_utc, task_filters=None,
+            asana_client, project_id, current_time_utc, task_filters=None,
             section_filters=None, completed_lookback_hours=None):
         '''Creates a Project utilizing data from Asana.
 
@@ -135,7 +86,7 @@ class Project(object):
         into Task and Section objects, and then filtered again in order to
         perform filtering that is only possible post-parsing.
 
-        :param asana: The initialized Asana object that makes API calls
+        :param asana_api: The initialized Asana object that makes API calls
         :param project_id: The Asana Project ID
         :param task_filters: A list of tag filters for filtering out tasks
         :param section_filters: A list of sections to filter out tasks
@@ -146,7 +97,7 @@ class Project(object):
         log.info('Creating project object from Asana Project {0}'.format(
             project_id))
 
-        project_json = asana.get('project', {'project_id': project_id})
+        project_json = asana_client.projects.find_by_id(project_id)
 
         tasks_params = {}
         if completed_lookback_hours:
@@ -158,9 +109,8 @@ class Project(object):
         else:
             completed_since = 'now'
         tasks_params['completed_since'] = completed_since
-        project_tasks_json = asana.get(
-            'project_tasks', {'project_id': project_id}, expand='.',
-            params=tasks_params)
+        project_tasks_json = list(asana_client.projects.tasks(
+            project_id, params=tasks_params, expand='.'))
         task_comments = {}
 
         current_section = None
@@ -176,7 +126,7 @@ class Project(object):
                 continue
             task_id = unicode(task[u'id'])
             log.info('Getting task comments for task: {0}'.format(task_id))
-            task_stories = asana.get('task_stories', {'task_id': task_id})
+            task_stories = asana_client.tasks.stories(task_id)
             current_task_comments = [
                 story for story in task_stories if
                 story[u'type'] == u'comment']
@@ -371,7 +321,8 @@ def as_date(datetime_str):
 
 
 def generate_templates(
-        project, html_template, text_template, current_date, current_time_utc, skip_inline_css=False):
+        project, html_template, text_template, current_date, current_time_utc,
+        skip_inline_css=False):
     '''Generates the templates using Jinja2 templates
 
     :param html_template: The filename of the HTML template in the templates
@@ -412,7 +363,8 @@ def generate_templates(
 
 def send_email(
         project, mail_server, from_address, to_addresses, cc_addresses,
-        rendered_html, rendered_text, current_date, smtp_username=None, smtp_password=None, smtp_port=None):
+        rendered_html, rendered_text, current_date, smtp_username=None,
+        smtp_password=None, smtp_port=None):
     '''Sends an email using a Project and rendered templates.
 
     :param project: The Project instance for this email
@@ -454,16 +406,19 @@ def send_email(
         to_addresses.extend(cc_addresses)
 
     try:
-        if (smtp_username != None and smtp_password != None):
+        if (smtp_username is not None and smtp_password is not None):
             if not smtp_port:
                 smtp_port = 465
-            log.info('Connecting to authenticated SMTP Server: {0}'.format(mail_server))
-            smtp_conn = smtplib.SMTP_SSL(mail_server, port=smtp_port, timeout=300)
+            log.info('Connecting to authenticated SMTP Server: {0}'.format(
+                mail_server))
+            smtp_conn = smtplib.SMTP_SSL(
+                mail_server, port=smtp_port, timeout=300)
             log.info('Logging in to Email')
             smtp_conn.ehlo()
             smtp_conn.login(smtp_username, smtp_password)
         else:
-            log.info('Connecting to anonymous SMTP Server: {0}'.format(mail_server))
+            log.info(
+                'Connecting to anonymous SMTP Server: {0}'.format(mail_server))
             smtp_conn = smtplib.SMTP(mail_server, timeout=300)
             log.info('Sending Email')
         smtp_conn.sendmail(from_address, to_addresses, message.as_string())
@@ -498,10 +453,10 @@ def create_cli_parser():
         description='Generates an email template for an Asana project',
         fromfile_prefix_chars='@')
     parser.add_argument('project_id', help='the asana project id')
-    parser.add_argument('api_key', help='your asana api key')
+    parser.add_argument('pat', help='your asana PAT (personal access token)')
     parser.add_argument(
         '-i', '--skip-inline-css',
-        action='store_false', 
+        action='store_false',
         default=True, help='skip inlining of CSS in rendered HTML')
     parser.add_argument(
         '-c', '--completed', type=int, dest='completed_lookback_hours',
@@ -537,10 +492,12 @@ def create_cli_parser():
         help="the 'From:' address for the outgoing email")
     email_group.add_argument(
         '--username', metavar='ADDRESS', default=None,
-        help="the username to authenticate to the outgoing (SMTP) mail server over SSL")
+        help='the username to authenticate to the outgoing (SMTP) mail server '
+        'over SSL')
     email_group.add_argument(
         '--password', metavar='ADDRESS', default=None,
-        help="the password to authenticate to the outgoing (SMTP) mail server over SSL")
+        help='the password to authenticate to the outgoing (SMTP) mail server '
+        'over SSL')
 
     return parser
 
@@ -561,14 +518,14 @@ def main():
         parser.error(
             "'To:' and 'From:' address are required for sending email")
 
-    asana = AsanaAPI(args.api_key)
+    asana_client = asana.Client.access_token(args.pat)
     filters = frozenset((unicode(filter) for filter in args.tag_filters))
     section_filters = frozenset(
         (unicode(section + ':') for section in args.section_filters))
     current_time_utc = datetime.datetime.now(dateutil.tz.tzutc())
     current_date = str(datetime.date.today())
     project = Project.create_project(
-        asana, args.project_id, current_time_utc, task_filters=filters,
+        asana_client, args.project_id, current_time_utc, task_filters=filters,
         section_filters=section_filters,
         completed_lookback_hours=args.completed_lookback_hours)
     rendered_html, rendered_text = generate_templates(
@@ -582,7 +539,8 @@ def main():
             cc_addresses = None
         send_email(
             project, args.mail_server, args.from_address, args.to_addresses[:],
-            cc_addresses, rendered_html, rendered_text, current_date, args.username, args.password)
+            cc_addresses, rendered_html, rendered_text, current_date,
+            args.username, args.password)
     else:
         write_rendered_files(rendered_html, rendered_text, current_date)
     log.info('Finished')
